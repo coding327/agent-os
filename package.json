@@ -14,8 +14,11 @@
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.5.2",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.71.1",
     "dotenv": "^17.4.2",
     "zod": "^4.4.3"
   },
