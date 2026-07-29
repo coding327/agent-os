@@ -22,3 +22,37 @@ export function resolveMentions(text: string, mentions: Mention[]): string {
   }
   return resolved.trim();
 }
+
+/** 从消息 content 中提取资源 key（image_key / file_key）。 */
+export function extractResourceKeys(
+  messageType: string,
+  content: string,
+): { type: "image" | "file"; key: string; fileName?: string }[] {
+  const parsed = JSON.parse(content);
+  const resources: {
+    type: "image" | "file";
+    key: string;
+    fileName?: string;
+  }[] = [];
+
+  if (messageType === "image" && parsed.image_key) {
+    resources.push({ type: "image", key: parsed.image_key });
+  }
+  if (messageType === "file" && parsed.file_key) {
+    resources.push({
+      type: "file",
+      key: parsed.file_key,
+      fileName: parsed.file_name,
+    });
+  }
+  if (messageType === "post") {
+    const paragraphs: any[][] = parsed.content ?? [];
+    for (const el of paragraphs.flat()) {
+      if (el.tag === "img" && el.image_key) {
+        resources.push({ type: "image", key: el.image_key });
+      }
+    }
+  }
+
+  return resources;
+}
