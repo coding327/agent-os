@@ -14,10 +14,21 @@ export function parseMentions(raw: any[] | undefined): Mention[] {
   }));
 }
 
-/** 把 @_user_N 占位符替换成 @显示名。 */
-export function resolveMentions(text: string, mentions: Mention[]): string {
+/**
+ * 把 @_user_N 占位符替换成 @显示名；并剔除机器人自身的提及。
+ * selfOpenId 匹配到机器人自己时，去掉占位符，只留下真正的任务文本。
+ */
+export function resolveMentions(
+  text: string,
+  mentions: Mention[],
+  selfOpenId?: string,
+): string {
   let resolved = text;
   for (const m of mentions) {
+    if (selfOpenId && m.openId === selfOpenId) {
+      resolved = resolved.replaceAll(m.key, "");
+      continue;
+    }
     resolved = resolved.replaceAll(m.key, `@${m.name}`);
   }
   return resolved.trim();

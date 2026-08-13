@@ -30,6 +30,8 @@ export interface BotOptions {
 
 export interface Bot {
   client: Lark.Client;
+  /** 机器人自己的 open_id，用于从消息里剔除对自身的 @ 提及（可能为空）。 */
+  selfOpenId: string;
   reply: (
     messageId: string,
     text: string,
@@ -96,13 +98,33 @@ function extractText(messageType: string, content: string): string {
   return "";
 }
 
-export function startBot(opts: BotOptions): Bot {
+export async function startBot(opts: BotOptions): Promise<Bot> {
   const { appId, appSecret, onMessage } = opts;
 
   const client = new Lark.Client({ appId, appSecret });
 
+  // 获取机器人自己的 open_id，用于在消息里剔除对自身的 @ 提及。
+  // 拿不到就置空，resolveMentions 会降级为不剔除，不影响正常收发。
+  let selfOpenId = "";
+  try {
+    const res = await client.request<{ bot?: { open_id?: string } }>({
+      method: "GET",
+      url: "/open-apis/bot/v3/info",
+      timeout: 5000,
+    });
+    selfOpenId = res?.bot?.open_id ?? "";
+    console.log(
+      selfOpenId
+        ? `[bot] self open_id=${selfOpenId}`
+        : "[bot] 未取到机器人 open_id，将保留消息里的自提及",
+    );
+  } catch (error) {
+    console.warn("[bot] 获取机器人 open_id 失败：", (error as Error).message);
+  }
+
   const bot: Bot = {
     client,
+    selfOpenId,
     async reply(messageId, text, replyInThread = false) {
       const res = await client.im.v1.message.reply({
         path: { message_id: messageId },
