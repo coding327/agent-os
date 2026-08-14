@@ -25,20 +25,28 @@ function isResultEvent(value: unknown): value is ClaudeResultEvent {
 }
 
 export function runClaude(options: RunClaudeOptions): Promise<ClaudeRunResult> {
+  // Windows 下 prompt 走 stdin（`-p` 后不跟参数即读 stdin），其他平台直接作为 `-p <prompt>`。
+  const useStdin = process.platform === "win32";
   const args = [
     "-p",
-    options.prompt,
+    ...(useStdin ? [] : [options.prompt]),
     "--output-format",
     "stream-json",
     "--verbose",
   ];
 
   return new Promise((resolve, reject) => {
-    const child = spawnCli("claude", args, {
-      cwd: options.cwd,
-      signal: options.signal,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = useStdin
+      ? spawnCli("claude", args, {
+          cwd: options.cwd,
+          signal: options.signal,
+          stdio: ["pipe", "pipe", "pipe"],
+        })
+      : spawnCli("claude", args, {
+          cwd: options.cwd,
+          signal: options.signal,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
     const lines = createInterface({ input: child.stdout });
     let finalResult: ClaudeRunResult | undefined;
     let resultError: Error | undefined;
@@ -98,5 +106,10 @@ export function runClaude(options: RunClaudeOptions): Promise<ClaudeRunResult> {
       settled = true;
       resolve(finalResult);
     });
+
+    if (useStdin && child.stdin) {
+      child.stdin.once("error", fail);
+      child.stdin.end(options.prompt, "utf8");
+    }
   });
 }
