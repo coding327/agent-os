@@ -1,3 +1,7 @@
+/**
+ * Agent OS 入口。
+ * 当前阶段：飞书消息驱动 Claude Code 完成任务。
+ */
 import "dotenv/config";
 import { join, resolve } from "node:path";
 import { startBot } from "./im/lark.js";
@@ -6,26 +10,40 @@ import { resolveMentions, extractResourceKeys } from "./im/message-parser.js";
 import { parseCommand } from "./core/command-parser.js";
 import { SessionManager, type Session } from "./core/session-manager.js";
 import { JsonSessionStore } from "./core/session-store.js";
-import { runClaude } from "./cli/claude-runner.js";
+import { ClaudeAdapter } from "./cli/claude-adapter.js";
+import { runCli } from "./cli/runner.js";
 
 const appId = process.env.BOT_A_APP_ID;
 const appSecret = process.env.BOT_A_APP_SECRET;
 const cliWorkdir = resolve(process.env.CLAUDE_WORKDIR ?? process.cwd());
+const cliAdapter = new ClaudeAdapter();
 
 if (!appId || !appSecret) {
   console.error("缺少 BOT_A_APP_ID / BOT_A_APP_SECRET，请检查 .env");
   process.exit(1);
 }
-
 console.log("Agent OS 启动，正在建立飞书长连接…");
-console.log(`[CLI] command=claude cwd=${cliWorkdir}`);
+console.log(`[CLI] command=${cliAdapter.command} cwd=${cliWorkdir}`);
 
 const sessions = await SessionManager.open({
   store: new JsonSessionStore(join("data", "sessions.json")),
 });
 console.log(`[会话] 已恢复 ${sessions.size} 个会话`);
-
 const activeRuns = new Map<string, AbortController>();
+
+function executeCli(
+  prompt: string,
+  sessionId: string | undefined,
+  signal: AbortSignal,
+) {
+  return runCli({
+    adapter: cliAdapter,
+    prompt,
+    cwd: cliWorkdir,
+    sessionId,
+    signal,
+  });
+}
 
 const STATUS_LABELS: Record<Session["status"], string> = {
   creating: "创建中",
@@ -39,6 +57,7 @@ function formatSessionStatus(session: Session): string {
     `会话：${session.id}`,
     `状态：${STATUS_LABELS[session.status]}`,
     `执行引擎：${session.cliId}`,
+    `CLI 会话：${session.cliSessionId ?? "(尚未建立)"}`,
     `话题：${session.threadId}`,
     `更新时间：${session.updatedAt}`,
   ].join("\n");
@@ -50,33 +69,26 @@ async function markSessionIdle(sessionId: string): Promise<void> {
   console.log(`[会话] id=${sessionId} status=idle`);
 }
 
-function executeCli(prompt: string, signal: AbortSignal) {
-  return runClaude({
-    prompt,
-    cwd: cliWorkdir,
-    signal,
-  });
-}
-
-await startBot({
+startBot({
   appId,
   appSecret,
   onMessage: async (msg, bot) => {
-    const resolved = resolveMentions(msg.text, msg.mentions, bot.selfOpenId);
+    const resolved = resolveMentions(msg.text, msg.mentions);
     const hasThread = !!msg.threadId || !!msg.rootId;
     const { session, isNew } = await sessions.resolve(msg);
-
-    console.log(` 原文: ${msg.text}`);
-    console.log(` 还原: ${resolved}`);
     console.log(
-      ` mentions: ${msg.mentions.map((m) => `${m.key}=${m.name}(${m.openId})`).join(", ") || "(无)"}`,
+      `[收到] chat=${msg.chatId} threadId=${msg.threadId} rootId=${msg.rootId} sender=${msg.senderOpenId}`,
+    );
+    console.log(`  原文: ${msg.text}`);
+    console.log(`  还原: ${resolved}`);
+    console.log(
+      `  mentions: ${msg.mentions.map((m) => `${m.key}=${m.name}(${m.openId})`).join(", ") || "(无)"}`,
     );
     console.log(
-      ` [会话] ${isNew ? "新建" : "复用"} id=${session.id} status=${session.status}`,
+      `  [会话] ${isNew ? "新建" : "复用"} id=${session.id} status=${session.status}`,
     );
 
     const command = parseCommand(resolved);
-
     if (command?.name === "help") {
       await bot.reply(
         msg.messageId,
@@ -87,16 +99,14 @@ await startBot({
       );
       return;
     }
-
     if (command?.name === "status") {
       await bot.reply(msg.messageId, formatSessionStatus(session), hasThread);
       return;
     }
-
     if (command?.name === "close") {
       activeRuns.get(session.id)?.abort();
       if (session.status !== "closed")
-        sessions.transition(session.id, "closed");
+        await sessions.transition(session.id, "closed");
       await bot.reply(
         msg.messageId,
         "当前会话已关闭。需要继续时，请新开一个话题。",
@@ -113,7 +123,6 @@ await startBot({
       );
       return;
     }
-
     if (!isNew && session.status === "creating") {
       await bot.reply(
         msg.messageId,
@@ -122,7 +131,6 @@ await startBot({
       );
       return;
     }
-
     if (session.status === "active") {
       await bot.reply(
         msg.messageId,
@@ -132,16 +140,7 @@ await startBot({
       return;
     }
 
-    if (!resolved) {
-      await bot.reply(
-        msg.messageId,
-        "请带上任务内容，例如：@我 帮我写一个排序函数",
-        hasThread,
-      );
-      return;
-    }
-
-    sessions.transition(session.id, "active");
+    await sessions.transition(session.id, "active");
     const run = new AbortController();
     activeRuns.set(session.id, run);
 
@@ -162,7 +161,7 @@ await startBot({
       }
     }
 
-    // 回复（话题内回复，replyInThread=true）
+    // 先回复一张卡片，让用户知道任务已经进入执行队列。
     let cardId: string | undefined;
     try {
       cardId = await bot.replyCard(
@@ -187,12 +186,14 @@ await startBot({
       await markSessionIdle(session.id);
       return;
     }
-
     console.log(`[卡片] 已发送 message_id=${cardId} inThread=${hasThread}`);
 
     // 让事件回调尽快返回，Claude Code 在后台继续执行。
-    void executeCli(resolved, run.signal)
+    void executeCli(resolved, session.cliSessionId, run.signal)
       .then(async (result) => {
+        if (result.sessionId && result.sessionId !== session.cliSessionId) {
+          await sessions.setCliSessionId(session.id, result.sessionId);
+        }
         await bot.updateCard(
           cardId,
           buildTaskCard({

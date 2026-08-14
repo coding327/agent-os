@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { CliId } from "../cli/types.js";
 import type { SessionStore } from "./session-store.js";
-
-export type CliId = "claude";
 
 export type SessionStatus = "creating" | "active" | "idle" | "closed";
 
@@ -10,6 +9,7 @@ export interface Session {
   threadId: string;
   chatId: string;
   cliId: CliId;
+  cliSessionId?: string;
   status: SessionStatus;
   createdAt: string;
   updatedAt: string;
@@ -58,6 +58,20 @@ export class SessionManager {
     this.now = options.now ?? (() => new Date());
     this.createId = options.createId ?? randomUUID;
     this.store = options.store;
+  }
+
+  static async open(
+    options: SessionManagerOptions = {},
+  ): Promise<SessionManager> {
+    const manager = new SessionManager(options);
+    const restored = (await options.store?.load()) ?? [];
+    for (const session of restored) {
+      manager.sessions.set(
+        sessionKey(session.chatId, session.threadId),
+        session,
+      );
+    }
+    return manager;
   }
 
   get size(): number {
@@ -122,18 +136,28 @@ export class SessionManager {
     return updated;
   }
 
-  static async open(
-    options: SessionManagerOptions = {},
-  ): Promise<SessionManager> {
-    const manager = new SessionManager(options);
-    const restored = (await options.store?.load()) ?? [];
-    for (const session of restored) {
-      manager.sessions.set(
-        sessionKey(session.chatId, session.threadId),
-        session,
-      );
+  async setCliSessionId(
+    sessionId: string,
+    cliSessionId: string,
+  ): Promise<Session> {
+    const current = this.get(sessionId);
+    if (!current) throw new Error(`会话不存在: ${sessionId}`);
+    if (!cliSessionId) throw new Error("CLI 会话 ID 不能为空");
+
+    const updated: Session = {
+      ...current,
+      cliSessionId,
+      updatedAt: this.now().toISOString(),
+    };
+    const key = sessionKey(updated.chatId, updated.threadId);
+    this.sessions.set(key, updated);
+    try {
+      await this.persist();
+    } catch (error) {
+      if (this.sessions.get(key) === updated) this.sessions.set(key, current);
+      throw error;
     }
-    return manager;
+    return updated;
   }
 
   private async persist(): Promise<void> {
