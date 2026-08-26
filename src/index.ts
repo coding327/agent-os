@@ -61,7 +61,6 @@ function executeCli(
   sessionId: string | undefined,
   signal: AbortSignal,
   onEvent: Parameters<typeof runCli>[0]["onEvent"],
-  timeoutMs?: number,
 ) {
   return runCli({
     adapter,
@@ -70,7 +69,6 @@ function executeCli(
     sessionId,
     signal,
     onEvent,
-    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   });
 }
 
@@ -330,7 +328,6 @@ async function startConfiguredBot(config: BotConfig): Promise<void> {
           progress.accept(event);
           renderProgress();
         },
-        config.timeoutMs,
       )
         .then(async (result) => {
           clearInterval(progressHeartbeat);

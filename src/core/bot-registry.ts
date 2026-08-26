@@ -8,17 +8,9 @@ export interface BotConfig {
   appSecret: string;
   defaultCliId: CliId;
   systemPrompt: string;
-  timeoutMs?: number;
 }
 
 type Environment = Record<string, string | undefined>;
-
-function envTimeoutMs(env: Environment): number | undefined {
-  const raw = env.CLI_TIMEOUT_MS?.trim();
-  if (!raw) return undefined;
-  const value = Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : undefined;
-}
 
 const BotSchema = z.object({
   id: z
@@ -30,7 +22,6 @@ const BotSchema = z.object({
   appIdEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
   appSecretEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
   defaultCli: z.enum(["claude", "codex"]),
-  timeoutMinutes: z.number().int().positive().optional(),
   systemPrompt: z.string().trim().optional().default(""),
   enabled: z.boolean().optional().default(true),
 });
@@ -58,17 +49,12 @@ export function parseBotConfigs(input: unknown, env: Environment): BotConfig[] {
       if (!appSecret) {
         throw new Error(`bot ${bot.id} 缺少环境变量 ${bot.appSecretEnv}`);
       }
-      const timeoutMs =
-        bot.timeoutMinutes != null
-          ? bot.timeoutMinutes * 60_000
-          : envTimeoutMs(env);
       return {
         id: bot.id,
         appId,
         appSecret,
         defaultCliId: bot.defaultCli,
         systemPrompt: bot.systemPrompt,
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       };
     });
   if (configs.length === 0) throw new Error("至少需要启用一个 bot");

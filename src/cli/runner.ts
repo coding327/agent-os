@@ -79,14 +79,9 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
           continue;
         }
         if (event.type === "result") {
-          // Codex 的事件顺序是 item.completed(agent_message，带回答) 在
-          // turn.completed（带 usage，answer 为空）之前。这里合并而不是覆盖，
-          // 避免真实回答被空字符串冲掉。
           finalResult = {
-            ...(finalResult?.stats ? { stats: finalResult.stats } : {}),
-            answer: event.answer || finalResult?.answer || "",
-            sessionId:
-              event.sessionId ?? finalResult?.sessionId ?? observedSessionId,
+            answer: event.answer,
+            sessionId: event.sessionId ?? observedSessionId,
             ...(event.stats ? { stats: event.stats } : {}),
           };
         }
