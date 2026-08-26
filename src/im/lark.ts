@@ -2,22 +2,20 @@
  * 飞书接入：WS 长连接收消息 + REST 回消息。
  */
 import * as Lark from "@larksuiteoapi/node-sdk";
-
-import { parseMentions, type Mention } from "./message-parser.js";
-
 import { mkdir } from "node:fs/promises";
 import { extname, join } from "node:path";
-import { CardJson } from "./card.js";
+import { parseMentions, type Mention } from "./message-parser.js";
+import type { CardJson } from "./card.js";
 
 export interface IncomingMessage {
   messageId: string;
   chatId: string;
-  chatType: string; // 'p2p' 单聊 | 'group' 群聊
-  messageType: string; // 'text' | 'image' | 'post' | ...
-  text: string; // text 消息的正文（其他类型为空串）
-  senderOpenId: string;
+  chatType: string;
+  messageType: string;
+  text: string;
   rootId: string;
   threadId: string;
+  senderOpenId: string;
   mentions: Mention[];
   rawContent: string;
 }
@@ -26,6 +24,29 @@ export interface BotOptions {
   appId: string;
   appSecret: string;
   onMessage: (msg: IncomingMessage, bot: Bot) => Promise<void>;
+  onCardAction?: (
+    action: CardAction,
+  ) => Promise<CardActionResponse | undefined>;
+}
+
+export interface CardAction {
+  operatorOpenId: string;
+  messageId: string;
+  value: Record<string, unknown>;
+}
+
+export interface CardActionResponse {
+  toast?: { type: "success" | "info" | "warning" | "error"; content: string };
+  card?: { type: "raw"; data: CardJson };
+}
+
+export function parseCardAction(data: any): CardAction {
+  const value = data?.action?.value;
+  return {
+    operatorOpenId: data?.operator?.open_id ?? data?.operator_id?.open_id ?? "",
+    messageId: data?.context?.open_message_id ?? data?.open_message_id ?? "",
+    value: isRecord(value) ? value : {},
+  };
 }
 
 export interface Bot {
@@ -79,30 +100,48 @@ function resourceExtension(
   return CONTENT_TYPE_EXTENSIONS[mime] ?? (type === "image" ? "img" : "bin");
 }
 
-function extractText(messageType: string, content: string): string {
+interface PostElement {
+  tag?: string;
+  text?: string;
+  user_id?: string;
+}
+
+function renderPostElement(element: PostElement): string {
+  if (element.tag === "at") return element.user_id ?? "";
+  if (element.tag === "br") return "\n";
+  if (["text", "a", "code", "code_block", "md"].includes(element.tag ?? "")) {
+    return element.text ?? "";
+  }
+  return "";
+}
+
+export function extractMessageText(
+  messageType: string,
+  content: string,
+): string {
   const parsed = JSON.parse(content);
   if (messageType === "text") {
     return parsed.text ?? "";
   }
   if (messageType === "post") {
-    const paragraphs: any[][] = parsed.content ?? [];
+    const paragraphs: PostElement[][] = parsed.content ?? [];
     return paragraphs
-      .flat()
-      .filter((el) => el.tag === "text")
-      .map((el) => el.text)
-      .join("")
+      .map((paragraph) => paragraph.map(renderPostElement).join(""))
+      .filter(Boolean)
+      .join("\n")
       .trim();
   }
   return "";
 }
 
 export function startBot(opts: BotOptions): Bot {
-  const { appId, appSecret, onMessage } = opts;
+  const { appId, appSecret, onMessage, onCardAction } = opts;
 
   const client = new Lark.Client({ appId, appSecret });
 
   const bot: Bot = {
     client,
+
     async reply(messageId, text, replyInThread = false) {
       const res = await client.im.v1.message.reply({
         path: { message_id: messageId },
@@ -114,6 +153,7 @@ export function startBot(opts: BotOptions): Bot {
       });
       return res.data?.message_id;
     },
+
     async replyCard(messageId, card, replyInThread = false) {
       const res = await client.im.v1.message.reply({
         path: { message_id: messageId },
@@ -125,12 +165,14 @@ export function startBot(opts: BotOptions): Bot {
       });
       return res.data?.message_id;
     },
+
     async updateCard(messageId, card) {
       await client.im.v1.message.patch({
         path: { message_id: messageId },
         data: { content: JSON.stringify(card) },
       });
     },
+
     async downloadResource(messageId, fileKey, type, saveDir, fileName) {
       const res = await client.im.v1.messageResource.get({
         path: { message_id: messageId, file_key: fileKey },
@@ -146,17 +188,21 @@ export function startBot(opts: BotOptions): Bot {
   };
 
   const dispatcher = new Lark.EventDispatcher({}).register({
-    "im.message.receive_v1": async (data: any) => {
+    "card.action.trigger": async (data: any) => {
+      if (!onCardAction) return undefined;
+      return onCardAction(parseCardAction(data));
+    },
+    "im.message.receive_v1": async (data) => {
       const m = data.message;
       const msg: IncomingMessage = {
         messageId: m.message_id,
         chatId: m.chat_id,
         chatType: m.chat_type,
         messageType: m.message_type,
-        text: extractText(m.message_type, m.content),
-        senderOpenId: data.sender.sender_id?.open_id ?? "",
+        text: extractMessageText(m.message_type, m.content),
         rootId: m.root_id ?? "",
         threadId: m.thread_id ?? "",
+        senderOpenId: data.sender.sender_id?.open_id ?? "",
         mentions: parseMentions(m.mentions),
         rawContent: m.content,
       };
@@ -168,4 +214,8 @@ export function startBot(opts: BotOptions): Bot {
   wsClient.start({ eventDispatcher: dispatcher });
 
   return bot;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
