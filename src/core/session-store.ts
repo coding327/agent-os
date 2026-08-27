@@ -10,10 +10,12 @@ export interface SessionStore {
 
 const SessionSchema = z.object({
   id: z.string().min(1),
+  botId: z.string().min(1),
   threadId: z.string().min(1),
   chatId: z.string().min(1),
   cliId: z.enum(["claude", "codex"]),
   cliSessionId: z.string().min(1).optional(),
+  workspaceDir: z.string().min(1),
   status: z.enum(["creating", "active", "idle", "closed"]),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
@@ -25,10 +27,41 @@ function recoverInterruptedSession(session: Session): Session {
   return { ...session, status: "idle" };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function migrateLegacySession(
+  row: unknown,
+  legacyBotId: string,
+  defaultWorkspaces: Readonly<Record<string, string>>,
+): { candidate: unknown; migrated: boolean } {
+  if (!isRecord(row)) return { candidate: row, migrated: false };
+
+  const needsBotId = !("botId" in row);
+  const needsWorkspace = !("workspaceDir" in row);
+  if (!needsBotId && !needsWorkspace) {
+    return { candidate: row, migrated: false };
+  }
+
+  const candidate: Record<string, unknown> = { ...row };
+  if (needsBotId) candidate.botId = legacyBotId;
+  const botId =
+    typeof candidate.botId === "string" ? candidate.botId : legacyBotId;
+  if (needsWorkspace) {
+    candidate.workspaceDir = defaultWorkspaces[botId] ?? process.cwd();
+  }
+  return { candidate, migrated: true };
+}
+
 export class JsonSessionStore implements SessionStore {
   private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly filePath: string) {}
+  constructor(
+    private readonly filePath: string,
+    private readonly legacyBotId = "default",
+    private readonly defaultWorkspaces: Readonly<Record<string, string>> = {},
+  ) {}
 
   async load(): Promise<Session[]> {
     let content: string;
@@ -47,11 +80,17 @@ export class JsonSessionStore implements SessionStore {
     const sessions: Session[] = [];
     let needsCleanup = false;
     for (const row of rows) {
-      const result = SessionSchema.safeParse(row);
+      const { candidate, migrated } = migrateLegacySession(
+        row,
+        this.legacyBotId,
+        this.defaultWorkspaces,
+      );
+      const result = SessionSchema.safeParse(candidate);
       if (!result.success) {
         needsCleanup = true;
         continue;
       }
+      if (migrated) needsCleanup = true;
 
       const recovered = recoverInterruptedSession(result.data);
       if (recovered.status !== result.data.status) needsCleanup = true;

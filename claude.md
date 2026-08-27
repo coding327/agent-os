@@ -23,3 +23,4 @@ pnpm start:once  # 单次启动
 > 踩坑后追加一行：现象 → 原因 → 正确做法。给未来的 AI 和人看。
 
 - pnpm v11 默认拒绝依赖的构建脚本（esbuild 装完不可用）→ 在 `pnpm-workspace.yaml` 写 `allowBuilds: { esbuild: true }` 放行
+- Windows 下 Codex CLI 执行完成后一直卡住无法 resolve，直到超时报错 → Windows 下通过 cmd/shim 启动的多层子进程退出时触发了 `exit`，但管道句柄可能延迟释放使得 `close` 无法按时触发；且 Codex `turn.completed` 事件会带空 answer 覆盖已有结果 → runner 中同时监听 `exit`/`close` 并做流资源清理，合并 answer/stats 避免冲掉回答
