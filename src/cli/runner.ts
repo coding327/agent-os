@@ -60,7 +60,13 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
       killCli(child);
     }, timeoutMs);
 
-    const finish = () => clearTimeout(timer);
+    const finish = () => {
+      clearTimeout(timer);
+      lines.close();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.stdin?.destroy();
+    };
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
@@ -80,8 +86,10 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
         }
         if (event.type === "result") {
           finalResult = {
-            answer: event.answer,
-            sessionId: event.sessionId ?? observedSessionId,
+            ...(finalResult?.stats ? { stats: finalResult.stats } : {}),
+            answer: event.answer || finalResult?.answer || "",
+            sessionId:
+              event.sessionId ?? finalResult?.sessionId ?? observedSessionId,
             ...(event.stats ? { stats: event.stats } : {}),
           };
         }
@@ -102,28 +110,40 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
       }
       fail(error);
     });
-    child.once("close", (code) => {
+    const settle = (code: number | null) => {
       if (settled) return;
-      if (timedOut) {
-        return fail(new Error(`${adapter.displayName} 执行超时`));
-      }
-      if (signal?.aborted) {
-        return fail(new Error(`${adapter.displayName} 执行已取消`));
-      }
-      if (resultError) return fail(resultError);
-      if (code !== 0) {
-        return fail(
-          new Error(
-            stderr.trim() || `${adapter.displayName} 退出，状态码 ${code}`,
-          ),
-        );
-      }
-      if (!finalResult) {
-        return fail(new Error(`${adapter.displayName} 没有返回最终结果`));
-      }
-      settled = true;
-      finish();
-      resolve(finalResult);
+      setImmediate(() => {
+        if (settled) return;
+        lines.close();
+
+        if (timedOut) {
+          return fail(new Error(`${adapter.displayName} 执行超时`));
+        }
+        if (signal?.aborted) {
+          return fail(new Error(`${adapter.displayName} 执行已取消`));
+        }
+        if (resultError) return fail(resultError);
+        if (code !== null && code !== 0) {
+          return fail(
+            new Error(
+              stderr.trim() || `${adapter.displayName} 退出，状态码 ${code}`,
+            ),
+          );
+        }
+        if (!finalResult) {
+          return fail(new Error(`${adapter.displayName} 没有返回最终结果`));
+        }
+        settled = true;
+        finish();
+        resolve(finalResult);
+      });
+    };
+
+    child.once("exit", (code) => {
+      settle(code);
+    });
+    child.once("close", (code) => {
+      settle(code);
     });
   });
 }
