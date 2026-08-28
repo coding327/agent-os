@@ -49,6 +49,12 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
     signal?.addEventListener("abort", () => killCli(child), { once: true });
     const lines = createInterface({ input: child.stdout });
     let observedSessionId = sessionId;
+    let observedAnswer: string | undefined;
+    let observedStats: CliRunResult["stats"];
+    const observedToolCalls = new Map<
+      string,
+      NonNullable<CliRunResult["toolCalls"]>[number]
+    >();
     let finalResult: CliRunResult | undefined;
     let resultError: Error | undefined;
     let stderr = "";
@@ -84,13 +90,22 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
           resultError = new Error(event.message);
           continue;
         }
+        if (event.type === "tool_call") {
+          observedToolCalls.set(event.toolUseId, event);
+          continue;
+        }
+        if (event.type === "tool_end" && event.failed) {
+          observedToolCalls.delete(event.toolUseId);
+          continue;
+        }
         if (event.type === "result") {
+          if (event.answer) observedAnswer = event.answer;
+          if (event.stats) observedStats = event.stats;
+          if (!observedAnswer) continue;
           finalResult = {
-            ...(finalResult?.stats ? { stats: finalResult.stats } : {}),
-            answer: event.answer || finalResult?.answer || "",
-            sessionId:
-              event.sessionId ?? finalResult?.sessionId ?? observedSessionId,
-            ...(event.stats ? { stats: event.stats } : {}),
+            answer: observedAnswer,
+            sessionId: event.sessionId ?? observedSessionId,
+            ...(observedStats ? { stats: observedStats } : {}),
           };
         }
       }
@@ -132,6 +147,15 @@ export function runCli(options: RunCliOptions): Promise<CliRunResult> {
         }
         if (!finalResult) {
           return fail(new Error(`${adapter.displayName} 没有返回最终结果`));
+        }
+        if (observedToolCalls.size > 0) {
+          finalResult.toolCalls = [...observedToolCalls.values()].map(
+            (call) => ({
+              toolUseId: call.toolUseId,
+              toolName: call.toolName,
+              input: call.input,
+            }),
+          );
         }
         settled = true;
         finish();

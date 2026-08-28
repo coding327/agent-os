@@ -4,6 +4,8 @@ import type {
   CliEvent,
   CliRunStats,
 } from "./types.js";
+import { CLARIFICATION_TOOL_NAME, codexAppToolArgs } from "./app-tools.js";
+import { extractClarificationFromText } from "../core/clarification.js";
 
 interface CodexEvent {
   type?: unknown;
@@ -116,7 +118,12 @@ export class CodexAdapter implements CliAdapter {
   readonly displayName = "Codex";
 
   buildArgs(prompt: string, promptInput: CliPromptInput): string[] {
-    const args = ["exec", "--json", "--skip-git-repo-check"];
+    const args = [
+      ...codexAppToolArgs(),
+      "exec",
+      "--json",
+      "--skip-git-repo-check",
+    ];
     // Windows 上沙箱功能不支持，必须完全禁用；approvals 也一并绕过。
     if (process.platform === "win32") {
       args.push("--dangerously-bypass-approvals-and-sandbox");
@@ -134,6 +141,7 @@ export class CodexAdapter implements CliAdapter {
     promptInput: CliPromptInput,
   ): string[] {
     const args = [
+      ...codexAppToolArgs(),
       "exec",
       "resume",
       "--json",
@@ -189,19 +197,50 @@ export class CodexAdapter implements CliAdapter {
       item.type === "agent_message" &&
       typeof item.text === "string"
     ) {
-      return [{ type: "result", answer: item.text }];
+      const events: CliEvent[] = [{ type: "result", answer: item.text }];
+      const extracted = extractClarificationFromText(item.text);
+      if (extracted) {
+        events.push({
+          type: "tool_call",
+          toolUseId: typeof item.id === "string" ? item.id : "clarification_1",
+          toolName: CLARIFICATION_TOOL_NAME,
+          input: extracted,
+        });
+      }
+      return events;
     }
     if (typeof item.id !== "string") return [];
     const tool = toolInfo(item);
     if (!tool) return [];
     if (event.type === "item.started") {
-      return [
+      const events: CliEvent[] = [
         {
           type: "tool_start",
           toolUseId: item.id,
           ...tool,
         },
       ];
+      if (
+        item.type === "mcp_tool_call" &&
+        item.server === "agent_os" &&
+        item.tool === CLARIFICATION_TOOL_NAME
+      ) {
+        let input = item.arguments ?? item.input;
+        if (typeof input === "string") {
+          try {
+            input = JSON.parse(input);
+          } catch {
+            // keep raw
+          }
+        }
+        events.push({
+          type: "tool_call",
+          toolUseId: item.id,
+          toolName: CLARIFICATION_TOOL_NAME,
+          input,
+        });
+      }
+      return events;
     }
     if (event.type === "item.completed") {
       const exitCode = asNumber(item.exit_code);
